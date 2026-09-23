@@ -3,7 +3,7 @@
 Data attribution for 3D Gaussian Splatting: which training images most influence a given
 rendered test view, and in which direction, without retraining the model.
 
-**[Project page and interactive scene explorer](https://mcms2.github.io/influence-functions-3dgs/)**
+**[Project page and interactive scene explorer](https://mariacarolinasebastiao.github.io/influence-functions-3dgs/)**
 
 MSc degree project, KTH Royal Institute of Technology.
 Supervisors: Mårten Björkman, Marcus Klasson, Vladislav Polianskii.
