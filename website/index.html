@@ -1,0 +1,1572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Influence Functions in 3D Gaussian Splatting</title>
+<meta name="description" content="Estimating which training images most influence a given test view in a 3D Gaussian Splatting reconstruction, and in which direction, validated against leave-one-out retraining. MSc thesis, KTH.">
+<meta property="og:title" content="Influence Functions in 3D Gaussian Splatting">
+<meta property="og:description" content="Data attribution for 3D Gaussian Splatting via the diagonal empirical Fisher, validated against leave-one-out retraining across three Mip-NeRF 360 scenes.">
+<meta property="og:type" content="website">
+<script>window.MathJax={tex:{inlineMath:[['\\(','\\)']],displayMath:[['\\[','\\]']]},svg:{fontCache:'global'},options:{renderActions:{addMenu:[]}}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<style>
+  :root{
+    --hero:#0f1b2d; --hero-ink:#f4f8fd; --hero-soft:#b9cbe0;
+    --bg:#eceff5; --surface:#ffffff; --surface-2:#e4e9f2;
+    --ink:#141820; --ink-soft:#565d68; --ink-faint:#889;
+    --line:#e2e6ec; --line-strong:#cfd5de;
+    --accent:#2b6cb0; --accent-ink:#1a4c80;
+    --pos:#b2182b; --neg:#2166ac; --blue:#6e9cc5;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --measure:44rem; --wide:74rem; --figw:66rem;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#101318; --surface:#171b21; --surface-2:#1e232b;
+      --ink:#e8ebf0; --ink-soft:#a3acb9; --ink-faint:#6b7480;
+      --line:#272e38; --line-strong:#333c48;
+      --accent:#5b9bd5; --accent-ink:#93c5ef;
+      --pos:#d6604d; --neg:#6baed6; --blue:#6e9cc5;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#101318; --surface:#171b21; --surface-2:#1e232b;
+    --ink:#e8ebf0; --ink-soft:#a3acb9; --ink-faint:#6b7480;
+    --line:#272e38; --line-strong:#333c48;
+    --accent:#5b9bd5; --accent-ink:#93c5ef;
+    --pos:#d6604d; --neg:#6baed6; --blue:#6e9cc5;
+  }
+  :root[data-theme="light"]{
+    --bg:#eceff5; --surface:#ffffff; --surface-2:#e4e9f2;
+    --ink:#141820; --ink-soft:#565d68; --ink-faint:#889;
+    --line:#e2e6ec; --line-strong:#cfd5de;
+    --accent:#2b6cb0; --accent-ink:#1a4c80;
+    --pos:#b2182b; --neg:#2166ac; --blue:#6e9cc5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;
+    -webkit-font-smoothing:antialiased;font-size:17px}
+  .wrap{max-width:var(--wide);margin:0 auto;padding:0 clamp(20px,5vw,48px)}
+  /* one centered reading column: text, figures, tables, equations all share --measure */
+  section>.wrap>*,footer>.wrap>*{max-width:var(--measure);margin-left:auto;margin-right:auto}
+  .col{max-width:var(--measure)}
+  /* every visual block shares one width, so the page keeps a single rhythm */
+  section>.wrap>.grid,section>.wrap>.tablewrap,section>.wrap>.carousel,
+  section>.wrap>.flow,section>.wrap>.figsplit,section>.wrap>.costrow,
+  section>.wrap>.approx,section>.wrap>.banner,section>.wrap>.eqhero{max-width:var(--figw)}
+  section>.wrap>.carousel{max-width:52rem}
+  section>.wrap>.stepmark{max-width:var(--figw)}
+  a{color:var(--accent-ink);text-decoration:none}
+  a:hover{text-decoration:underline}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+
+  /* ---------- eyebrow / labels ---------- */
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent-ink);display:flex;align-items:center;gap:10px}
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--accent)}
+
+  /* ---------- hero ---------- */
+  header.hero{position:relative;overflow:hidden;background:var(--hero);border-bottom:none}
+  .hero .eyebrow{color:#8fbde8}
+  .hero .eyebrow::before{background:#5b9bd5}
+  .hero h1{color:#fff}
+  .hero .lede{color:#cadcee}
+  .hero .byline{color:var(--hero-soft)}
+  .hero .byline strong{color:#fff}
+  .hero .btn{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.26);color:#e9f1fa}
+  .hero .btn.primary{background:#fff;border-color:#fff;color:var(--hero)}
+  .hero .btn:hover{background:rgba(255,255,255,.14)}
+  .hero .btn.primary:hover{background:#eaf2fb;color:var(--hero)}
+  .hero .kw span{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.15);color:#a9c1da}
+  #splat{position:absolute;inset:0;width:100%;height:100%;z-index:0}
+  .hero-inner{position:relative;z-index:1;
+    padding:clamp(64px,12vh,150px) clamp(20px,5vw,48px) clamp(48px,8vh,90px)}
+  .hero h1{font-family:var(--serif);font-weight:600;letter-spacing:-.01em;line-height:1.04;
+    text-wrap:balance;font-size:clamp(2.4rem,6vw,4.6rem);max-width:20ch}
+  .hero .lede{font-size:clamp(1.05rem,1.8vw,1.32rem);color:var(--ink-soft);margin-top:1.1rem;max-width:52ch}
+  /* on a narrow phone, let the title wrap rather than run off the edge */
+  @media (max-width:420px){.hero h1 span{white-space:normal}}
+  .hero .byline{margin-top:2rem;font-size:.95rem;color:var(--ink-soft);line-height:1.8}
+  .hero .byline strong{color:var(--ink);font-weight:600}
+  .cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:2rem}
+  .btn{font-family:var(--mono);font-size:13px;letter-spacing:.03em;padding:11px 18px;border-radius:8px;
+    border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);display:inline-flex;gap:8px;align-items:center}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn:hover{text-decoration:none;transform:translateY(-1px)}
+  .btn.primary:hover{color:#fff}
+  .kw{display:flex;flex-wrap:wrap;gap:8px;margin-top:1.8rem}
+  .kw span{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);border:1px solid var(--line);
+    border-radius:999px;padding:5px 11px;background:var(--surface)}
+
+  /* ---------- sections ---------- */
+  section{padding:clamp(52px,9vh,96px) 0;border-bottom:1px solid var(--line)}
+  section:nth-of-type(even){background:var(--surface)}
+  /* scroll progress */
+  #progress{position:fixed;top:0;left:0;height:3px;width:0;z-index:40;background:var(--accent);
+    transition:width .08s linear}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.65rem,3.1vw,2.3rem);
+    letter-spacing:-.015em;line-height:1.1;text-wrap:pretty;margin:.7rem 0 1.1rem}
+  h3{font-family:var(--serif);font-weight:600;font-size:clamp(1.22rem,1.9vw,1.5rem);
+    line-height:1.18;letter-spacing:-.01em;margin:3rem 0 .8rem;color:var(--accent-ink);
+    position:relative;padding-left:18px;text-wrap:pretty}
+  h3::before{content:"";position:absolute;left:0;top:.16em;bottom:.16em;width:5px;
+    border-radius:3px;background:var(--accent)}
+  h3+p,h3+.grouptoggle,h3+.note{margin-top:0}
+  p{margin:0 0 1rem;max-width:var(--measure);text-align:justify;-webkit-hyphens:auto;hyphens:auto}
+  .hero .lede,.byline,.find p,.fig .cap,.foot-row{text-align:left;hyphens:manual}
+  p.col,.col p{max-width:var(--measure)}
+  .lead{font-size:1.14rem;color:var(--ink-soft)}
+  strong{color:var(--ink)}
+
+  /* ---------- research questions ---------- */
+  .rq{display:grid;gap:14px;margin-top:1.4rem}
+  .rq .item{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:18px 20px}
+  .rq .tag{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--accent-ink);font-weight:700}
+  .rq .item p{margin:.35rem 0 0;color:var(--ink-soft)}
+
+  /* ---------- equation ---------- */
+  .eq{font-family:var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
+    padding:20px;margin:1.4rem 0;overflow-x:auto;font-size:1.02rem;text-align:center;color:var(--ink)}
+  .eq .sub{color:var(--ink-faint)}
+  /* colour key naming the three factors of the equation above it */
+  .terms{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:-.5rem auto 1.6rem}
+  .term{display:flex;gap:10px;align-items:flex-start}
+  .term .swatch{width:4px;border-radius:2px;flex:none;align-self:stretch;min-height:34px}
+  .term .tt{font-family:var(--mono);font-size:.82rem;color:var(--ink);line-height:1.5}
+  .term .td{font-size:.82rem;color:var(--ink-soft);line-height:1.4}
+  .note{font-size:.9rem;color:var(--ink-faint);font-family:var(--mono)}
+  .caveat{font-size:.92rem;color:var(--ink-soft);border-left:3px solid var(--line-strong);
+    padding-left:14px;margin:1.3rem 0 0;max-width:var(--measure);text-align:left;hyphens:manual}
+  .caveat b{color:var(--ink)}
+
+  /* ---------- findings ---------- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:1.6rem}
+  .find{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px;
+    display:flex;flex-direction:column;gap:.5rem;
+    box-shadow:0 1px 2px rgba(15,27,45,.04),0 10px 26px -18px rgba(15,27,45,.35);
+    transition:transform .18s,box-shadow .18s}
+  section:nth-of-type(even) .find{background:var(--surface-2)}
+  .find:hover{transform:translateY(-2px);
+    box-shadow:0 2px 4px rgba(15,27,45,.05),0 18px 34px -20px rgba(15,27,45,.45)}
+  .find .stat{font-family:var(--mono);font-size:2rem;font-weight:600;letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums;line-height:1}
+  .find .mk{font-size:1.15rem;font-weight:700;line-height:1;color:var(--pos)}
+  .find h4{font-size:1.02rem;font-weight:650}
+  .find p{font-size:.94rem;color:var(--ink-soft);margin:0}
+  .stat.acc{color:var(--accent-ink)}
+
+  /* ---------- click to enlarge ---------- */
+  .zoomable{cursor:zoom-in}
+  figure.big,.rigframe{position:relative}
+  figure.big::after,.rigframe::after{content:"⤢";position:absolute;top:10px;right:10px;font-size:13px;
+    line-height:1;padding:5px 7px;border-radius:7px;background:rgba(20,24,32,.5);color:#fff;
+    opacity:0;transition:opacity .15s;pointer-events:none}
+  figure.big:hover::after,.rigframe:hover::after{opacity:1}
+  @media(hover:none){figure.big::after,.rigframe::after{display:none}}
+  #lightbox{position:fixed;inset:0;z-index:60;background:rgba(10,18,30,.9);display:none;
+    place-items:center;padding:clamp(16px,4vw,52px);cursor:zoom-out}
+  #lightbox.on{display:grid}
+  #lightbox img{max-width:100%;max-height:100%;border-radius:10px;background:#fff;
+    box-shadow:0 30px 80px -20px rgba(0,0,0,.6)}
+  #lightbox .lbclose{position:absolute;top:18px;right:20px;font-family:var(--mono);font-size:12px;
+    color:#fff;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.32);
+    border-radius:8px;padding:6px 12px;cursor:pointer}
+
+  /* ---------- figure with a side column ---------- */
+  .figsplit{display:grid;grid-template-columns:minmax(0,1fr);gap:22px;align-items:start;
+    margin:2.2rem auto;max-width:var(--figw)}
+  @media(min-width:900px){
+    .figsplit{grid-template-columns:238px minmax(0,1fr)}
+    .figsplit.flip{grid-template-columns:minmax(0,1fr) 238px}
+  }
+  .figsplit figure.big{margin:0}
+  .figsplit .tablewrap{margin:0}
+  .fignote{border-left:3px solid var(--accent);padding-left:16px}
+  .fignote .row+.row{margin-top:1.1rem;padding-top:1.1rem;border-top:1px solid var(--line)}
+  .fignote .k{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent-ink);display:block;margin-bottom:6px}
+  .fignote .v{font-family:var(--mono);font-size:1.45rem;font-weight:600;letter-spacing:-.02em;
+    color:var(--accent-ink);display:block;line-height:1.1}
+  .fignote .row.mute .k,.fignote .row.mute .v{color:var(--ink-soft)}
+  .fignote .v.tight{font-size:1.1rem;white-space:nowrap}
+  .fignote p{font-size:.9rem;color:var(--ink-soft);margin:.55rem 0 0;max-width:none;
+    text-align:left;hyphens:manual}
+
+  /* ---------- step flow ---------- */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;margin:1.6rem auto;max-width:var(--figw)}
+  .flow .step{flex:1 1 190px;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;box-shadow:0 1px 2px rgba(15,27,45,.04)}
+  section:nth-of-type(even) .flow .step{background:var(--surface-2)}
+  .flow .step .n{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--accent);
+    display:block;margin-bottom:6px}
+  .flow .step .t{font-size:.96rem;font-weight:650;line-height:1.25;display:block}
+  .flow .step .d{font-size:.86rem;color:var(--ink-soft);margin-top:5px;display:block}
+  .flow .arw{align-self:center;color:var(--accent);font-size:1.15rem;line-height:1}
+  @media(max-width:660px){.flow{flex-direction:column}.flow .step{flex:0 0 auto}
+    .flow .arw{transform:rotate(90deg);align-self:flex-start;margin-left:14px}}
+
+  /* ---------- table ---------- */
+  .tablewrap{overflow-x:auto;margin-top:1.5rem;border:1px solid var(--line);border-radius:12px;background:var(--surface);
+    box-shadow:0 1px 2px rgba(15,27,45,.04),0 10px 26px -18px rgba(15,27,45,.3)}
+  section:nth-of-type(even) .tablewrap{background:var(--surface-2)}
+  section:nth-of-type(even) .rq .item{background:var(--surface-2)}
+  table{border-collapse:collapse;width:100%;font-size:.95rem}
+  caption{caption-side:bottom;text-align:left;color:var(--ink-faint);font-size:.85rem;padding:12px 16px;font-family:var(--mono)}
+  th,td{padding:11px 16px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--accent-ink);font-weight:700;background:color-mix(in srgb,var(--blue) 12%,transparent);
+    border-bottom:1px solid var(--line-strong)}
+  tbody tr:nth-child(even){background:color-mix(in srgb,var(--ink-faint) 5%,transparent)}
+  tbody tr.hl{background:color-mix(in srgb,var(--blue) 14%,transparent)}
+  thead th.num{text-align:right}
+  tbody tr:last-child td{border-bottom:none}
+  td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+  .hl{background:color-mix(in srgb,var(--blue) 12%,transparent)}
+  .chip{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:5px;font-variant-numeric:tabular-nums}
+  .chip.pos{background:color-mix(in srgb,var(--blue) 26%,transparent);color:var(--ink)}
+  .chip.mid{background:color-mix(in srgb,var(--blue) 13%,transparent);color:var(--ink-soft)}
+  .chip.low{background:color-mix(in srgb,var(--ink-faint) 15%,transparent);color:var(--ink-faint)}
+  .grouptoggle{display:flex;flex-wrap:wrap;gap:6px;margin-top:1.5rem}
+  .gbtn{font-family:var(--mono);font-size:12px;letter-spacing:.02em;padding:7px 13px;border-radius:8px;
+    border:1px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);cursor:pointer}
+  .gbtn:hover{color:var(--ink)}
+  .gbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .tablewrap+.note,.grouptoggle+.tablewrap{margin-top:.8rem}
+  td .star{color:var(--ink-faint);font-family:var(--mono)}
+  /* prose tables wrap; the numeric ones keep their single line */
+  table.prose td{white-space:normal}
+  table.prose td:first-child{white-space:nowrap;font-family:var(--mono);font-size:.86rem;vertical-align:top}
+
+  /* ---------- explorer ---------- */
+  .explorer{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:1.6rem}
+  /* let the interactive explorer break out to (near) the full window width */
+  #explorer .grouptoggle,#explorer .explorer{
+    width:min(94vw,1400px);max-width:none;margin-left:50%;transform:translateX(-50%)}
+  .explorer .bar{display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--line);
+    background:var(--surface-2);flex-wrap:wrap}
+  .explorer .bar .sel{font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);border:1px solid var(--line-strong);
+    border-radius:7px;padding:6px 12px;background:var(--surface);display:inline-flex;gap:8px;align-items:center}
+  .explorer .bar .sel b{color:var(--ink)}
+  .explorer .bar .live{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+  .stage{position:relative;height:min(56vw,440px);background:
+    radial-gradient(120% 120% at 50% 30%,color-mix(in srgb,var(--accent) 8%,transparent),transparent 60%)}
+  #scene{position:absolute;inset:0;width:100%;height:100%}
+  .legend{position:absolute;left:16px;bottom:14px;display:flex;align-items:center;gap:8px;font-family:var(--mono);
+    font-size:11px;color:var(--ink-soft);background:color-mix(in srgb,var(--surface) 80%,transparent);
+    padding:6px 10px;border-radius:8px;border:1px solid var(--line);backdrop-filter:blur(4px)}
+  .legend .bar-grad{width:110px;height:8px;border-radius:4px;
+    background:linear-gradient(90deg,var(--neg),color-mix(in srgb,var(--ink-faint) 30%,transparent),var(--pos))}
+
+  /* ---------- figures ---------- */
+  .figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px;margin-top:1.6rem}
+  .fig{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+  .fig img{width:100%;display:block;aspect-ratio:4/3;object-fit:contain;background:var(--surface-2)}
+  .fig .ph{aspect-ratio:4/3;display:grid;place-items:center;color:var(--ink-faint);font-family:var(--mono);
+    font-size:12px;text-align:center;padding:14px;
+    background:repeating-linear-gradient(45deg,transparent,transparent 10px,color-mix(in srgb,var(--line) 40%,transparent) 10px,color-mix(in srgb,var(--line) 40%,transparent) 11px)}
+  .fig .cap{padding:12px 14px;font-size:.86rem;color:var(--ink-soft);border-top:1px solid var(--line)}
+  .fig .cap b{color:var(--ink);font-weight:600;font-family:var(--mono);font-size:.8rem}
+  /* inline section figures */
+  figure.big{margin:2rem auto;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface);
+    box-shadow:0 1px 2px rgba(15,27,45,.04),0 14px 32px -22px rgba(15,27,45,.4)}
+  figure.big img{width:100%;display:block;background:var(--surface)}
+  figure.big figcaption{padding:12px 16px;font-size:.9rem;color:var(--ink-soft);border-top:1px solid var(--line);text-align:left}
+  figure.big figcaption b{color:var(--ink);font-family:var(--mono);font-size:.82rem;margin-right:.4em}
+  /* own-set panels, opened from the table */
+  .panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px;margin:1.5rem auto}
+  .panels:empty,.panels.none{margin:0}
+  .panels figure.big{margin:0}
+  tbody tr.rowlink{cursor:pointer}
+  tbody tr.rowlink:hover{background:color-mix(in srgb,var(--blue) 22%,transparent)}
+  .rowopen{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+    margin-left:10px;padding:2px 9px;border-radius:999px;cursor:pointer;line-height:1.7;
+    border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));
+    background:transparent;color:var(--accent-ink)}
+  .rowopen:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+  .rowopen.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .panel-close{float:right;font-family:var(--mono);font-size:11px;cursor:pointer;background:transparent;
+    border:1px solid var(--line-strong);border-radius:6px;padding:2px 9px;color:var(--ink-soft)}
+  .panel-close:hover{color:var(--ink)}
+  .figrow{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:2rem auto}
+  .figrow figure.big{margin:0}
+  @media(max-width:640px){.figrow{grid-template-columns:1fr}}
+  /* wide breakout for horizontal, multi-panel figures */
+  figure.big.wide,.figrow.wide,.eqfig.wide{max-width:var(--figw)}
+  /* an equation beside the plot that explains it, locked to the same two rows */
+  .eqfig{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto;gap:16px;margin:2rem auto}
+  .eqfig .cell{display:grid;grid-row:span 2;grid-template-rows:subgrid;gap:14px}
+  .eqfig .eq{align-self:center;margin:0}
+  .eqfig figure.big{margin:0}
+  @media(max-width:640px){.eqfig{grid-template-columns:1fr}
+    .eqfig .cell{grid-row:auto;grid-template-rows:auto auto}}
+  /* the three numbers behind the cost argument */
+  .costrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:1.6rem auto}
+  .costrow .c{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;box-shadow:0 1px 2px rgba(15,27,45,.04)}
+  section:nth-of-type(even) .costrow .c{background:var(--surface-2)}
+  .costrow .v{font-family:var(--mono);font-size:1.6rem;font-weight:600;letter-spacing:-.02em;
+    color:var(--accent-ink);display:block;line-height:1.1}
+  .costrow .c.slow .v{color:var(--neg)}
+  .costrow .d{font-size:.86rem;color:var(--ink-soft);margin-top:7px;display:block}
+  /* the curvature shortlist: what was ruled out, and the one that was kept */
+  .approx{display:grid;gap:2px;margin:1.6rem auto;background:var(--line);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .approx .r{display:grid;grid-template-columns:26px 1fr 96px 1.5fr;gap:14px;align-items:start;
+    background:var(--surface);padding:15px 18px}
+  .approx .r.keep{background:color-mix(in srgb,var(--accent) 12%,var(--surface))}
+  .approx .mk{font-size:1.05rem;line-height:1.3;color:var(--pos);text-align:center;font-weight:700}
+  .approx .r.keep .mk{color:var(--accent-ink)}
+  .approx .nm{font-weight:650;line-height:1.25}
+  .approx .fx{display:block;margin-top:4px;font-size:.82rem;color:var(--ink-faint)}
+  .approx .why{font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--pos);padding-top:3px}
+  .approx .r.keep .why{color:var(--accent-ink)}
+  .approx .rs{font-size:.9rem;color:var(--ink-soft);line-height:1.45}
+  .approx .r.keep .rs{color:var(--ink)}
+  @media(max-width:760px){
+    .approx .r{grid-template-columns:26px 1fr;gap:6px 14px}
+    .approx .why{grid-column:2}.approx .rs{grid-column:2}}
+  .banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 22px;margin:14px auto 0;
+    border-radius:12px;padding:14px 20px;background:#1a4c80;color:#fff}
+  .banner .bt{font-weight:650;font-size:.96rem}
+  .banner .eq{background:transparent;border:0;padding:0;margin:0;color:#fff}
+  .banner.dark{display:block;background:#0f2d4d}
+  .sidenote{font-style:italic;color:var(--accent-ink);font-size:.92rem;margin:1.1rem auto 1.9rem;
+    max-width:var(--figw)}
+  section>.wrap>.sidenote{max-width:var(--figw)}
+  .banner.dark b:only-child{margin-bottom:0}
+  /* tucked-away detail: open it only if you want it */
+  .more{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin:1.5rem auto 0}
+  section:nth-of-type(even) .more{background:var(--surface-2)}
+  .more>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;
+    padding:12px 16px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--accent-ink);border-radius:9px}
+  .more>summary::-webkit-details-marker{display:none}
+  .more>summary::after{content:"+";margin-left:auto;font-size:15px;line-height:1;font-weight:600}
+  .more[open]>summary::after{content:"\2212"}
+  .more>summary:hover{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+  .more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .more .body{padding:0 16px 16px}
+  .more .body p{margin:0;font-size:.93rem;color:var(--ink-soft);max-width:none}
+  .more .body p+p{margin-top:.8rem}
+  /* the same disclosure, tucked into the bottom of a panel */
+  .more.inline{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;
+    margin:14px -22px 0}
+  .more.inline>summary{justify-content:center;gap:8px;padding:11px 22px 3px;border-radius:0}
+  .more.inline>summary::after{margin-left:0}
+  .more.inline>summary:hover{background:transparent;color:var(--accent)}
+  .more.inline .body{padding:8px 22px 2px}
+  /* a small marker naming what the next block strips away */
+  .stepmark{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent-ink);display:flex;align-items:center;gap:12px;margin:2.4rem auto .8rem}
+  .stepmark::after{content:"";flex:1;height:1px;background:var(--line-strong);opacity:.6}
+  /* the one equation the whole method comes down to */
+  .eqhero{border:2px solid var(--accent);border-radius:14px;padding:16px 22px 14px;
+    margin:14px auto 0;background:var(--surface)}
+  .eqhero .k{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent-ink);display:block;text-align:center;margin-bottom:2px}
+  .eqhero .eq{background:transparent;border:0;padding:0;margin:0}
+  .banner.dark b{display:block;font-size:1rem;margin-bottom:4px}
+  .banner.dark span{font-size:.94rem;opacity:.86}
+  /* the answer the conclusion lands on */
+  .finding{background:color-mix(in srgb,var(--accent) 8%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
+    border-radius:14px;padding:20px 24px;margin:1.6rem auto 0}
+  .finding .row+.row{margin-top:1rem;padding-top:1rem;
+    border-top:1px solid color-mix(in srgb,var(--accent) 22%,transparent)}
+  .finding .k{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent-ink);display:block;margin-bottom:7px}
+  .finding p{margin:0;font-size:1rem;max-width:none;text-align:left;hyphens:manual}
+  /* the conditions the conclusion depends on */
+  .conds{display:grid;gap:10px;margin:.9rem auto 0}
+  .conds .c{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:14px 18px}
+  .conds .k{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent-ink);display:block;margin-bottom:6px}
+  .conds .t{font-size:.95rem;display:block}
+  figure.big .imgs3{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--line)}
+  figure.big .imgs3 img{width:100%;height:100%;object-fit:cover;aspect-ratio:3/2}
+  @media(max-width:560px){figure.big .imgs3{grid-template-columns:1fr}}
+  /* carousel */
+  .carousel{position:relative;margin:1.4rem auto 0;max-width:var(--figw)}
+  .carousel .track{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;border:1px solid var(--line);
+    border-radius:14px;background:var(--surface);scrollbar-width:none}
+  .carousel .track::-webkit-scrollbar{display:none}
+  .carousel .slide{min-width:100%;scroll-snap-align:center;margin:0}
+  .carousel .slide .imgs{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--line)}
+  .carousel .slide img{width:100%;height:100%;object-fit:cover;display:block;aspect-ratio:3/2;background:var(--surface-2)}
+  .carousel .slide figcaption{padding:12px 16px;font-size:.9rem;color:var(--ink-soft);text-align:left}
+  .carousel .slide figcaption b{color:var(--ink);font-family:var(--mono);font-size:.82rem;margin-right:.5em}
+  .carousel .cbtn{position:absolute;top:33%;transform:translateY(-50%);z-index:2;width:36px;height:36px;
+    border-radius:50%;border:1px solid var(--line-strong);background:color-mix(in srgb,var(--surface) 88%,transparent);
+    color:var(--ink);cursor:pointer;font-size:18px;line-height:1;backdrop-filter:blur(4px)}
+  .carousel .cbtn.prev{left:10px}.carousel .cbtn.next{right:10px}
+  .carousel .dots{display:flex;gap:6px;justify-content:center;margin-top:12px}
+  .carousel .dots span{width:7px;height:7px;border-radius:50%;background:var(--line-strong);cursor:pointer}
+  .carousel .dots span.on{background:var(--accent)}
+  /* side-by-side comparison columns */
+  /* layered comparison: a rail of layers on the left, the two training images on the right */
+  .layers{display:grid;grid-template-columns:232px 1fr;gap:26px;margin:2rem auto;align-items:start}
+  .layers.wide{max-width:var(--figw)}
+  .layerrail{display:flex;flex-direction:column;gap:8px;position:sticky;top:26px}
+  .layerrail .railcap{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:2px}
+  .lbtn{text-align:left;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--line-strong);
+    border-radius:10px;padding:11px 13px;cursor:pointer;color:var(--ink-soft);
+    display:flex;flex-direction:column;gap:3px;transition:border-color .15s,background .15s,color .15s}
+  .lbtn .n{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--ink-faint)}
+  .lbtn .t{font-weight:650;font-size:.94rem;color:var(--ink);line-height:1.25}
+  .lbtn .d{font-size:.82rem;line-height:1.4}
+  .lbtn:hover{border-color:var(--line-strong)}
+  .lbtn.active{border-left-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--surface))}
+  .lbtn.active .n{color:var(--accent-ink)}
+  .layerstage{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  /* the two geometric alternatives: concept beside result */
+  .alts{margin:1.8rem auto}
+  .alts.wide{max-width:var(--figw)}
+  .altgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:.8rem}
+  .altgrid .frame{display:flex;flex-direction:column}
+  .altgrid .frame .stack{position:relative;aspect-ratio:1.25;background:var(--surface)}
+  .altgrid .frame .stack img{position:absolute;inset:0;width:100%;height:100%;
+    object-fit:contain;padding:10px}
+  .altgrid .frame .stack img:not(.on){display:none}
+  .altgrid .frame .sub{margin-top:auto}
+  .grouptoggle .tinylabel{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-faint);align-self:center;margin-right:2px}
+  @media(max-width:760px){.altgrid{grid-template-columns:1fr}}
+  .rigframe{grid-column:1/-1;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+    background:var(--surface);
+    box-shadow:0 1px 2px rgba(15,27,45,.04),0 12px 28px -20px rgba(15,27,45,.4)}
+  .rigframe img{width:100%;display:block;background:var(--surface)}
+  .rigframe .sub{padding:9px 14px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);
+    border-top:1px solid var(--line)}
+  .layerverdict{grid-column:1/-1;font-size:.92rem;color:var(--ink-soft);
+    border-left:3px solid var(--accent);padding:8px 0 8px 14px;margin-top:.2rem}
+  .layerverdict b{color:var(--ink)}
+  .frame{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface);
+    box-shadow:0 1px 2px rgba(15,27,45,.04),0 12px 28px -20px rgba(15,27,45,.4)}
+  .frame .colhead{padding:10px 14px;font-family:var(--mono);font-size:.8rem;font-weight:600}
+  .frame .plate{position:relative;aspect-ratio:1.5;background:var(--surface);border-top:1px solid var(--line)}
+  .frame .plate img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+    opacity:0;transition:opacity .22s ease}
+  .frame .plate img.on{opacity:1}
+  .frame .sub{padding:9px 14px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);
+    border-top:1px solid var(--line)}
+  @media (prefers-reduced-motion:reduce){.frame .plate img{transition:none}}
+  @media(max-width:860px){
+    .layers{grid-template-columns:1fr;gap:16px}
+    .layerrail{position:static;flex-direction:row;overflow-x:auto;gap:8px}
+    .lbtn{min-width:210px}
+    .layerrail .railcap{display:none}
+  }
+  @media(max-width:560px){.layerstage{grid-template-columns:1fr}}
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:2rem auto}
+  .colfig{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface)}
+  .colfig img{width:100%;display:block;border-top:1px solid var(--line);background:var(--surface-2)}
+  .colfig .colhead{padding:10px 14px;font-family:var(--mono);font-size:.8rem;font-weight:600}
+  .colhead.pos{color:var(--pos)}.colhead.neg{color:var(--neg)}
+  @media(max-width:640px){.compare{grid-template-columns:1fr}}
+  /* bibtex */
+  .bibtex{position:relative;margin-top:1rem}
+  .bibtex pre{font-family:var(--mono);font-size:.8rem;line-height:1.6;color:var(--ink-soft);
+    background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;white-space:pre}
+  .bibtex .copy{position:absolute;top:10px;right:10px;font-family:var(--mono);font-size:11px;
+    border:1px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);
+    padding:5px 10px;border-radius:7px;cursor:pointer}
+  .bibtex .copy:hover{color:var(--ink)}
+
+  /* ---------- footer ---------- */
+  footer{padding:56px 0 80px}
+  .cite{font-family:var(--mono);font-size:.82rem;color:var(--ink-soft);background:var(--surface-2);
+    border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;line-height:1.7}
+  .foot-row{display:flex;flex-wrap:wrap;gap:24px;justify-content:space-between;align-items:baseline;margin-top:1.4rem;
+    color:var(--ink-faint);font-size:.85rem}
+
+  /* theme toggle */
+  .toggle{position:fixed;top:16px;right:16px;z-index:20;font-family:var(--mono);font-size:12px;
+    border:1px solid var(--line-strong);background:var(--surface);color:var(--ink-soft);
+    padding:7px 12px;border-radius:8px;cursor:pointer}
+  .toggle:hover{color:var(--ink)}
+  .draft{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--neg);border:1px dashed color-mix(in srgb,var(--neg) 50%,var(--line));border-radius:6px;padding:3px 9px;margin-bottom:1rem}
+
+  /* ---------- section rail ---------- */
+  .sidenav{position:fixed;left:18px;top:50%;transform:translateY(-50%);z-index:20;
+    display:flex;flex-direction:column;gap:3px;padding:12px 12px;border-radius:12px;
+    background:color-mix(in srgb,var(--surface) 82%,transparent);border:1px solid var(--line);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    transition:opacity .3s,transform .3s}
+  .sidenav.nav-hidden{opacity:0;pointer-events:none;transform:translateY(-50%) translateX(-10px)}
+  .sidenav a{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink-faint);
+    font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:5px 8px;border-radius:7px;
+    border-left:2px solid transparent;transition:color .2s,background .2s,border-color .2s}
+  .sidenav a .dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--line-strong);
+    transition:background .2s,transform .2s}
+  .sidenav a:hover{color:var(--ink);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .sidenav a:hover .dot{background:var(--accent)}
+  .sidenav a.active{color:var(--ink);border-left-color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .sidenav a.active .dot{background:var(--accent);transform:scale(1.4)}
+  @media (prefers-reduced-motion:reduce){.sidenav a,.sidenav a .dot{transition:none}}
+  @media (max-width:1400px){.sidenav{display:none}}
+</style>
+</head>
+<body>
+
+<button class="toggle" id="themeBtn" aria-label="Toggle color theme">◐ theme</button>
+
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Enlarged figure">
+  <button class="lbclose" type="button">close</button>
+  <img alt="">
+</div>
+
+<nav class="sidenav" aria-label="Section navigation">
+  <a href="#top"        data-sec="top"><span class="dot"></span><span class="lbl">Top</span></a>
+  <a href="#abstract"   data-sec="abstract"><span class="dot"></span><span class="lbl">Overview</span></a>
+  <a href="#questions"  data-sec="questions"><span class="dot"></span><span class="lbl">Questions</span></a>
+  <a href="#related"    data-sec="related"><span class="dot"></span><span class="lbl">Context</span></a>
+  <a href="#method"     data-sec="method"><span class="dot"></span><span class="lbl">Method</span></a>
+  <a href="#results"    data-sec="results"><span class="dot"></span><span class="lbl">Results</span></a>
+  <a href="#explorer"   data-sec="explorer"><span class="dot"></span><span class="lbl">Explore</span></a>
+  <a href="#code"       data-sec="code"><span class="dot"></span><span class="lbl">Conclusions</span></a>
+</nav>
+
+<header class="hero" id="top">
+  <div id="progress" aria-hidden="true"></div>
+  <canvas id="splat" aria-hidden="true"></canvas>
+  <div class="wrap hero-inner">
+    <div class="eyebrow">MSc Degree Project · KTH</div>
+    <h1><span style="white-space:nowrap">Influence Functions</span> in 3D Gaussian Splatting</h1>
+    <p class="lede">Identifying which training images most influence a given test view in a
+      3D Gaussian Splatting reconstruction, and in which direction, without retraining the model.</p>
+    <div class="byline">
+      <strong>M. C. Sebastião</strong><br>
+      Supervisors: Mårten Björkman · Marcus Klasson · Vladislav Polianskii<br>
+      KTH Royal Institute of Technology
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="#explorer">Explore influence in the scene →</a>
+      <a class="btn" href="#results">Results</a>
+      <a class="btn" href="#code">Code &amp; thesis</a>
+    </div>
+    <div class="kw">
+      <span>3D Gaussian Splatting</span><span>Influence Functions</span><span>Data Attribution</span>
+      <span>Empirical Fisher</span><span>LOO Retraining</span><span>Data Efficiency</span>
+    </div>
+  </div>
+</header>
+
+<section id="abstract">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 1 · Overview</div>
+    <div class="col">
+      <h2>Tracing a reconstruction back to its training images</h2>
+      <p>A 3D Gaussian Splatting model reconstructs a scene from multiple input images captured
+        from overlapping viewpoints, and it does not depend on every one of them equally.
+        Quantifying that contribution is the aim of data attribution, the problem of tracing an
+        output back to the training images most responsible for it.</p>
+      <p>The direct way to measure it is to remove an image, retrain, and observe the change,
+        but this LOO retraining is prohibitively expensive. <strong>Influence functions</strong>
+        estimate the same effect without retraining, by combining training and test gradients
+        through the inverse Hessian of the loss. This thesis estimates influence with a diagonal
+        empirical Fisher approximation and validates the scores against LOO retraining under the
+        model's own training loss, across three Mip-NeRF 360 scenes.</p>
+    </div>
+  </div>
+</section>
+
+<section id="questions">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 1 · Research questions</div>
+    <div class="col"><h2>The question, and two hypotheses</h2></div>
+    <div class="rq col">
+      <div class="item"><span class="tag">RQ</span>
+        <p>Can influence functions be used to identify both beneficial and harmful training
+          images in 3D Gaussian Splatting reconstructions, and do they capture something that
+          simpler geometric measures do not?</p></div>
+      <div class="item"><span class="tag">H1</span>
+        <p>Influence functions can quantify the individual contribution of each training image
+          to the final reconstruction, identifying both beneficial and harmful views.</p></div>
+      <div class="item"><span class="tag">H2</span>
+        <p>Influence scores approximate the LOO effect of each training image at a
+          fraction of the retraining cost.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="related">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 2 &amp; 3 · Background and related work</div>
+    <div class="col"><h2>Data attribution and Radiance Fields</h2>
+      <p class="lead">Data attribution methods exist, but they do not transfer directly to the 3DGS
+        setting.</p></div>
+
+    <div class="grid">
+      <div class="find">
+        <span class="mk">✗</span>
+        <h4>PruNeRF</h4>
+        <p>Uses influence functions to prune distractors, but in NeRF. Its MLP backbone satisfies
+          the layer-wise structure the K-FAC approximation requires. Gaussian attributes do not.</p>
+      </div>
+      <div class="find">
+        <span class="mk">✗</span>
+        <h4>FisherRF / PUP-3DGS</h4>
+        <p>Fisher information is already computed in 3DGS, but for view selection (FisherRF,
+          colors) and pruning (PUP-3DGS, means and scales).</p>
+      </div>
+      <div class="find">
+        <span class="mk">✗</span>
+        <h4>TracIn</h4>
+        <p>A popular gradient-based alternative. Needs checkpoints across training, but densification
+          changes the number of Gaussians, so checkpoints share no common parameter space.</p>
+      </div>
+    </div>
+
+    <p class="sidenote">The colors and m+s parameter groups evaluated later come from these two
+      works.</p>
+
+    <details class="more">
+      <summary>How this work differs</summary>
+      <div class="body">
+        <p>Both Fisher-based methods assume a Gaussian distribution over rendered pixel values, under
+          which the negative log-likelihood reduces to an MSE objective and the Fisher coincides with
+          the Gauss-Newton Hessian. Their curvature is therefore derived from a loss the model was
+          never trained on. Here the empirical Fisher is computed directly from the L1 and D-SSIM
+          training loss, the same loss the LOO deltas are measured under.</p>
+        <p>On ground truth: influence functions may approximate the PBRF more accurately than they
+          approximate LOO, but the PBRF is itself an approximation of that removal effect, and LOO
+          measures it directly.</p>
+      </div>
+    </details>
+
+    <div class="banner dark">
+      <b>To the best of my knowledge, this is the first work to apply influence functions in 3DGS
+        and validate them against LOO retraining.</b>
+    </div>
+  </div>
+</section>
+
+<section id="method">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 4 · Method</div>
+    <div class="col">
+      <h2>Estimating influence, and the ground truth it is validated against</h2>
+      <p>The predicted change in a test view's loss when a training image is removed takes the
+        classical inverse-Hessian form. The LOO delta is the same quantity measured rather than
+        estimated.</p>
+    </div>
+
+    <div class="eqfig wide">
+      <div class="cell">
+        <div class="eq">
+          \[ \mathcal{I}(z_{\text{train}}, z_{\text{test}}) = \frac{1}{N}\,
+             \nabla_{\theta}\mathcal{L}(z_{\text{test}})^{\top}\, H^{-1}\,
+             \nabla_{\theta}\mathcal{L}(z_{\text{train}}) \]
+        </div>
+        <figure class="big">
+          <img src="img/concept_tangent.png" alt="Test loss against the upweighting of one training point: the true retraining curve and the straight line the influence function extrapolates along" loading="lazy">
+          <figcaption><b>The estimate</b> Upweighting a training point by &epsilon; moves the test loss along
+            the solid curve. Influence is the slope at &epsilon; = 0, extrapolated to &epsilon; = &minus;1/N,
+            which is removal. The red gap is what the linearization misses.</figcaption>
+        </figure>
+      </div>
+      <div class="cell">
+        <div class="eq">
+          \[ \Delta\mathcal{L}(k, j) \;=\; \mathcal{L}(z^{*}_{j};\, \hat{\theta}_{-k})
+             \;-\; \mathcal{L}(z^{*}_{j};\, \hat{\theta}) \]
+        </div>
+        <figure class="big">
+          <img src="img/concept_loodelta.png" alt="The same axes, with the leave-one-out delta marked as the vertical gap between the retrained model and the full model" loading="lazy">
+          <figcaption><b>The ground truth</b> The LOO delta is the same quantity measured rather than
+            estimated: retrain without image <i>k</i>, then read the test loss on view <i>j</i>.</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <div class="col">
+      <p>The three factors of the estimate:</p>
+    </div>
+    <div class="terms col">
+      <div class="term"><span class="swatch" style="background:#2b6cb0"></span>
+        <span><span class="tt">&nabla;<sub>&theta;</sub>&#8466;(z<sub>test</sub>)</span><br>
+        <span class="td">test gradient: how this view's loss responds to each parameter</span></span></div>
+      <div class="term"><span class="swatch" style="background:#0f2d4d"></span>
+        <span><span class="tt">H<sup>&minus;1</sup></span><br>
+        <span class="td">curvature: how far the parameters actually move</span></span></div>
+      <div class="term"><span class="swatch" style="background:#6e9cc5"></span>
+        <span><span class="tt">&nabla;<sub>&theta;</sub>&#8466;(z<sub>train</sub>)</span><br>
+        <span class="td">training gradient: how this image pushed them during training</span></span></div>
+    </div>
+
+    <div class="col">
+      <p>The estimate is a tangent. Retraining traces the true curve; the influence function reads
+        its slope at the trained model and extrapolates to \(\epsilon = -1/N\), which is removal. The
+        gap between the two is the linearization error, and it is why a large score is more
+        trustworthy than a small one.</p>
+      <p>A positive delta means removing the image raised the loss, so the image was
+        <strong>beneficial</strong>; a negative delta means it was <strong>harmful</strong>. Agreement
+        is reported as Pearson r<sub>P</sub> and Spearman r<sub>S</sub>. Spearman is the one that
+        matters here, since the question is which images rank highest.</p>
+    </div>
+
+    <div class="col">
+      <h3>Why this approximation</h3>
+      <p>The inverse Hessian is intractable at millions of Gaussian parameters, and the choice of
+        what replaces it is forced more than preferred. The rasterizer provides a first-order
+        backward pass and nothing else, which rules out most of the standard machinery.</p>
+    </div>
+
+    <div class="approx">
+      <div class="r">
+        <span class="mk">✗</span>
+        <span class="nm">CG / LiSSA<span class="fx">\(Hv\)</span></span>
+        <span class="why">Why not</span>
+        <span class="rs">Needs Hessian vector products, which require differentiating through the
+          loss a second time. The rasterizer has no second backward pass.</span>
+      </div>
+      <div class="r">
+        <span class="mk">✗</span>
+        <span class="nm">Gauss-Newton<span class="fx">\(J^{\top}J\)</span></span>
+        <span class="why">Why not</span>
+        <span class="rs">Needs Jacobian vector products of the rendered output. Prior second order
+          work in 3DGS had to write custom CUDA kernels to get them.</span>
+      </div>
+      <div class="r">
+        <span class="mk">✗</span>
+        <span class="nm">EK-FAC</span>
+        <span class="why">Why not</span>
+        <span class="rs">Requires the layered structure of a multilayer perceptron. Gaussian
+          attributes are explicit parameters, not weights passed through layers.</span>
+      </div>
+      <div class="r">
+        <span class="mk">✗</span>
+        <span class="nm">True Fisher<span class="fx">\(F = \mathbb{E}_{y\sim p_{\theta}}\!\left[\nabla_{\theta}\log p_{\theta}\,\nabla_{\theta}\log p_{\theta}^{\top}\right]\)</span></span>
+        <span class="why">Why not</span>
+        <span class="rs">Takes an expectation over labels drawn from the model’s own distribution,
+          which is undefined for a loss that is not a negative log likelihood.</span>
+      </div>
+      <div class="r keep">
+        <span class="mk">✓</span>
+        <span class="nm">Empirical Fisher<span class="fx">\(F = \frac{1}{N}\sum_k \nabla\mathcal{L}(z_k)\,\nabla\mathcal{L}(z_k)^{\top}\)</span></span>
+        <span class="why">Why this one</span>
+        <span class="rs">Positive semi-definite by construction for any loss, the same gradient outer
+          product form as the Gauss-Newton Hessian at the image level, and computable from the per
+          image loss gradients that already exist.</span>
+      </div>
+    </div>
+
+    <div class="banner">
+      <span class="bt">Still very large, so it is further restricted to the diagonal</span>
+      <span class="eq">\( \tilde{F}_{ii} = \frac{1}{N}\sum_{k}\left[\nabla\mathcal{L}(z_k)_i\right]^{2} \)</span>
+    </div>
+
+    <div class="eqhero">
+      <span class="k">The influence estimate used in this thesis</span>
+      <div class="eq">
+        \[ \mathcal{I}(z_{\text{train}}, z_{\text{test}}) \approx \frac{1}{N}\sum_{i=1}^{P}
+           \frac{\partial \mathcal{L}(z_{\text{test}})}{\partial \theta_i}\;
+           \tilde{F}^{-1}_{ii}\;
+           \frac{\partial \mathcal{L}(z_{\text{train}})}{\partial \theta_i} \]
+      </div>
+      <details class="more inline">
+        <summary>know more</summary>
+        <div class="body">
+          <p>Rather than damping the Fisher, near-zero curvature entries are dropped below a
+            threshold (α = 10⁻³ of the group mean), which removes 19% to 45% of the parameters per
+            group yet preserves more than 99.99% of the diagonal Fisher mass.</p>
+          <p>All six Gaussian attribute groups are tracked during the Fisher pass and ablated
+            afterwards. Unless stated otherwise the default is <span class="note">means</span>, for
+            its low parameter count (∼2.4M in Garden against ∼47M for all six) and its competitive
+            performance with the larger groups on most views.</p>
+        </div>
+      </details>
+    </div>
+
+    <div class="banner dark">
+      <b>The empirical Fisher is not theoretically guaranteed to be a good approximation.</b>
+      <span>So it is validated empirically: per test view against the LOO loss deltas, and against
+        two geometric measures, camera-pose distance and Gaussian overlap.</span>
+    </div>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 5 · Experiments</div>
+    <div class="col"><h2>Correlation between influence function estimates and LOO retraining</h2>
+      <p class="lead">Influence agrees with retraining on the predictions it is most confident
+        about, and fails in ways that are explainable rather than random.</p></div>
+
+    <div class="flow">
+      <div class="step"><span class="n">01</span><span class="t">Select</span>
+        <span class="d">Per test view, the ten training images of largest absolute influence.</span></div>
+      <div class="arw">→</div>
+      <div class="step"><span class="n">02</span><span class="t">Retrain</span>
+        <span class="d">Ten LOO retraining runs, one with each of those images removed.</span></div>
+      <div class="arw">→</div>
+      <div class="step"><span class="n">03</span><span class="t">Compare</span>
+        <span class="d">Pearson r&#8346; and Spearman r&#8347; between influence and LOO Δℒ.</span></div>
+    </div>
+
+    <h3>The three scenes</h3>
+    <div class="carousel" id="sceneCarousel">
+      <button class="cbtn prev" type="button" aria-label="Previous scene">‹</button>
+      <button class="cbtn next" type="button" aria-label="Next scene">›</button>
+      <div class="track">
+        <figure class="slide"><div class="imgs">
+          <img src="img/train_frame_00001.JPG" alt="Garden training frame 1">
+          <img src="img/train_frame_00010.JPG" alt="Garden training frame 10"></div>
+          <figcaption><b>Garden</b> Outdoor centred capture · 167 train / 18 test · 30k iterations.</figcaption></figure>
+        <figure class="slide"><div class="imgs">
+          <img src="img/frame_00031.JPG" alt="Bicycle training frame 31">
+          <img src="img/frame_00193.JPG" alt="Bicycle training frame 193"></div>
+          <figcaption><b>Bicycle</b> Outdoor sparse circular capture · 175 train / 19 test · 30k iterations.</figcaption></figure>
+        <figure class="slide"><div class="imgs">
+          <img src="img/frame_00254.JPG" alt="Room frame 254">
+          <img src="img/frame_00014.JPG" alt="Room frame 14"></div>
+          <figcaption><b>Room</b> Indoor, view-dependent appearance · 280 train / 31 test · 30k iterations.</figcaption></figure>
+      </div>
+      <div class="dots"></div>
+    </div>
+
+    <h3>LOO retraining on randomly selected training points</h3>
+    <p>Twenty of Garden's 167 training images were drawn uniformly at random and each one retrained
+      out, per test view. Agreement vanishes, and the last two columns say why.</p>
+
+    <div class="figsplit flip">
+      <div class="tablewrap">
+        <table>
+          <caption>Influence (eFIM, means) vs. LOO Δℒ on 20 uniformly random Garden training indices,
+            across the six Garden test views with LOO ground truth. The last two columns count how many
+            of the 20 fall in the tails of the influence distribution. * p &lt; 0.05 (n = 20, critical
+            value 0.444).</caption>
+          <thead><tr><th>Test view</th><th class="num">Pearson r&#8346;</th><th class="num">Spearman r&#8347;</th>
+            <th class="num">In top/bot 3%</th><th class="num">In top/bot 10%</th></tr></thead>
+          <tbody>
+            <tr><td>Garden 3</td><td class="num">−0.16</td><td class="num">+0.07</td><td class="num">2/20</td><td class="num">3/20</td></tr>
+            <tr><td>Garden 9</td><td class="num">+0.08</td><td class="num">−0.12</td><td class="num">0/20</td><td class="num">0/20</td></tr>
+            <tr><td>Garden 13</td><td class="num">−0.07</td><td class="num">−0.00</td><td class="num">1/20</td><td class="num">4/20</td></tr>
+            <tr><td>Garden 14</td><td class="num">+0.14</td><td class="num">−0.13</td><td class="num">1/20</td><td class="num">3/20</td></tr>
+            <tr><td>Garden 16</td><td class="num">−0.10</td><td class="num">+0.12</td><td class="num">1/20</td><td class="num">3/20</td></tr>
+            <tr><td>Garden 17</td><td class="num">+0.69<span class="star"> *</span></td><td class="num">+0.02</td><td class="num">2/20</td><td class="num">6/20</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="fignote">
+        <div class="row">
+          <span class="k">Result</span><span class="v">r&#8347; ≈ 0</span>
+          <p>Near-zero Spearman r&#8347; with the LOO retraining ground truth on every one of the six
+            Garden test views.</p>
+        </div>
+        <div class="row mute">
+          <span class="k">Why</span><span class="v">&lt; 3 / 20</span>
+          <p>A random selection of 20 out of 167 indices rarely reaches the percentile range where
+            influence makes confident predictions.</p>
+        </div>
+      </aside>
+    </div>
+
+    <h3>LOO retraining on most influential training points</h3>
+    <p>The remaining experiments therefore focus on the top-influential training images. For each of
+      the six Garden test views, ten LOO retraining runs were carried out on the ten training images
+      of largest absolute influence.</p>
+
+    <div class="figsplit">
+      <aside class="fignote">
+        <div class="row">
+          <span class="k">Best · test view 14</span><span class="v">r&#8347; = +0.92</span>
+          <p>The best-performing case, and the only evaluated view whose selected set contains images
+            with negative influence estimates.</p>
+        </div>
+        <div class="row mute">
+          <span class="k">Weakest · test view 16</span><span class="v">r&#8347; = +0.01</span>
+          <p>The highest-loss Garden view, whose ground truth holds negative deltas larger than any
+            other. Prediction and ground truth are not aligned.</p>
+        </div>
+      </aside>
+      <figure class="big">
+        <img src="img/influence_vs_loo_garden_v2.jpg" alt="Influence vs LOO scatter plots on the six Garden test views">
+        <figcaption><b>Fig. 5.3</b> Influence (eFIM, Position group) vs. LOO Δℒ on the six Garden test
+          views, n = 10 each. Three of the six reach r&#8347; ≥ +0.73.</figcaption>
+      </figure>
+    </div>
+
+    <h3>LOO retraining across parameter groups</h3>
+    <div class="grouptoggle" id="grouptoggle" role="group" aria-label="Parameter group">
+      <button class="gbtn" data-g="means"  title="Gaussian means (position), μ">Position</button>
+      <button class="gbtn" data-g="ms"     title="means + scales">Position + scale</button>
+      <button class="gbtn" data-g="msq"    title="means + scales + quaternions (rotation)">Position + scale + rotation</button>
+      <button class="gbtn" data-g="colors" title="spherical-harmonic color: degree-0 and higher-degree coefficients">Colors</button>
+      <button class="gbtn" data-g="5p"     title="means + scales + quats + opacities + degree-0 color (features_dc); everything except view-dependent color">All but view-dependent</button>
+      <button class="gbtn" data-g="all6"   title="all six Gaussian attribute groups">All parameters</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <caption>eFIM influence vs. LOO retraining (Pearson r&#8346; and Spearman r&#8347;) on the six
+          Garden test views. Each view's validation set is the ten training images of largest absolute
+          influence selected by the Position (means) group. Switch the parameter group above to see how
+          agreement changes; hover a group for its exact composition. Highlighted row is the highest-loss
+          Garden view. * p &lt; 0.05 (n = 10, critical value 0.632).</caption>
+        <thead><tr><th class="num">Test view</th><th class="num">Pearson r&#8346;</th><th class="num">Spearman r&#8347;</th><th>Agreement</th></tr></thead>
+        <tbody id="ablation-body"></tbody>
+      </table>
+    </div>
+    <p style="margin-top:1.1rem">Different parameter groups yield different estimates, and the
+      best-performing group differs from view to view. On test 16 the <strong>Colors</strong> group
+      raises agreement from essentially zero (r&#8347; = +0.01) to +0.58, consistent with that view's
+      error being appearance-driven rather than geometric. Choosing the wrong group can reduce a
+      strong correlation to none.</p>
+
+    <p class="note" style="margin-top:1.1rem">Test&nbsp;14 and test&nbsp;16 each have a per group
+      panel showing every group's own selection against the LOO ground truth. Open one from its row in
+      the table above, or here:</p>
+    <div class="grouptoggle" id="paneltoggle" role="group" aria-label="Own-set panels">
+      <button class="gbtn" type="button" data-panel="14" aria-expanded="false" aria-controls="panel-14">Test 14 panel</button>
+      <button class="gbtn" type="button" data-panel="16" aria-expanded="false" aria-controls="panel-16">Test 16 panel</button>
+    </div>
+    <div class="panels wide" id="ownset-panels">
+      <figure class="big" id="panel-14" hidden>
+        <img src="img/param_group_ownset_heatmap_test14_abs_v2.jpg" alt="Per-group influence vs LOO heatmap, test 14" loading="lazy">
+        <figcaption><button class="panel-close" type="button" data-close="14">close</button>
+          <b>Test 14</b> Own-set influence (left) vs. LOO (right), sorted by LOO delta; the
+          spatial groups agree strongly.</figcaption>
+      </figure>
+      <figure class="big" id="panel-16" hidden>
+        <img src="img/param_group_ownset_heatmap_test16_abs_v2.jpg" alt="Per-group influence vs LOO heatmap, test 16" loading="lazy">
+        <figcaption><button class="panel-close" type="button" data-close="16">close</button>
+          <b>Test 16</b> Position misses the harmful band that Colors recovers, matching the
+          toggle above.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Is influence needed?</h3>
+    <p>Each term of the influence computation is removed in turn and re-measured against the LOO Δℒ.
+      First the Fisher term, which reduces influence to a plain gradient dot product between the
+      training and test gradients. Then the gradients themselves, which leaves purely geometric
+      measures.</p>
+
+    <p class="stepmark">Removing the Fisher term · gradient dot products</p>
+
+    <div class="figsplit flip">
+      <div class="tablewrap">
+        <table>
+          <caption>eFIM influence vs. gradient dot product on selected views across parameter groups.
+            Dot replaces the Fisher inverse with the identity. Both are measured on the
+            means-selected validation set. * p &lt; 0.05 (n = 10, critical value 0.632).</caption>
+          <thead><tr><th>Scene · view</th><th>Group</th><th class="num">eFIM r&#8346;</th>
+            <th class="num">Dot r&#8346;</th><th class="num">eFIM r&#8347;</th><th class="num">Dot r&#8347;</th></tr></thead>
+          <tbody>
+            <tr><td>Garden 14</td><td>means</td><td class="num">+0.78<span class="star"> *</span></td><td class="num">+0.69<span class="star"> *</span></td><td class="num">+0.92<span class="star"> *</span></td><td class="num">+0.62</td></tr>
+            <tr><td>Garden 14</td><td>m+s</td><td class="num">+0.79<span class="star"> *</span></td><td class="num">+0.69<span class="star"> *</span></td><td class="num">+0.92<span class="star"> *</span></td><td class="num">+0.62</td></tr>
+            <tr><td>Garden 14</td><td>colors</td><td class="num">+0.69<span class="star"> *</span></td><td class="num">+0.29</td><td class="num">+0.72<span class="star"> *</span></td><td class="num">+0.41</td></tr>
+            <tr><td>Garden 17</td><td>means</td><td class="num">+0.94<span class="star"> *</span></td><td class="num">+0.42</td><td class="num">+0.78<span class="star"> *</span></td><td class="num">+0.14</td></tr>
+            <tr><td>Garden 17</td><td>m+s</td><td class="num">+0.91<span class="star"> *</span></td><td class="num">+0.42</td><td class="num">+0.82<span class="star"> *</span></td><td class="num">+0.14</td></tr>
+            <tr><td>Garden 17</td><td>colors</td><td class="num">+0.81<span class="star"> *</span></td><td class="num">+0.49</td><td class="num">+0.76<span class="star"> *</span></td><td class="num">+0.46</td></tr>
+            <tr class="hl"><td>Bicycle 7</td><td>means</td><td class="num">+0.68<span class="star"> *</span></td><td class="num">−0.02</td><td class="num">+0.62</td><td class="num">−0.19</td></tr>
+            <tr><td>Room 28</td><td>means</td><td class="num">+0.34</td><td class="num">+0.22</td><td class="num">+0.20</td><td class="num">+0.12</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="fignote">
+        <div class="row">
+          <span class="k">Without the Fisher</span><span class="v">eFIM wins</span>
+          <p>On every view and parameter group, the full eFIM influence correlates more strongly with
+            the LOO ground truth than the gradient dot product, for both r&#8346; and r&#8347;.</p>
+        </div>
+        <div class="row mute">
+          <span class="k">Sharpest case · Bicycle 7</span><span class="v">−0.19 / +0.62</span>
+          <p>The dot product anti-correlates with LOO while the eFIM correlations stay clearly
+            positive.</p>
+        </div>
+      </aside>
+    </div>
+
+    <p class="stepmark">Removing the gradients · geometric alternatives</p>
+
+    <div class="alts wide" id="alts">
+      <div class="grouptoggle" id="altmeasure" role="tablist" aria-label="Geometric measure">
+        <button class="gbtn active" type="button" role="tab" data-measure="dist" aria-selected="true">Camera translation distance</button>
+        <button class="gbtn" type="button" role="tab" data-measure="ovl" aria-selected="false">Gaussian overlap</button>
+      </div>
+
+      <div class="altgrid">
+        <figure class="frame">
+          <div class="stack">
+            <img class="on" data-m="dist" src="img/concept_distance.png"
+                 alt="Test view 14 and three training cameras on the capture, with the straight line distance to each drawn as a dashed line">
+            <img data-m="ovl" src="img/concept_overlap_crop.png" loading="lazy"
+                 alt="Two camera frusta seen from above: the Gaussians both views render are dark blue, those only one of them renders are grey and light blue">
+          </div>
+          <div class="sub" id="altconceptsub"></div>
+        </figure>
+        <figure class="frame">
+          <div class="stack">
+            <img class="on" data-m="dist" data-g="means"  src="img/pose_means.jpg"     alt="Influence against translation distance, means group">
+            <img        data-m="dist" data-g="ms"      src="img/pose_ms.jpg"        alt="Influence against translation distance, means and scales" loading="lazy">
+            <img        data-m="dist" data-g="colors"  src="img/pose_colors.jpg"    alt="Influence against translation distance, colors group" loading="lazy">
+            <img        data-m="ovl"  data-g="means"   src="img/overlap_means.jpg"  alt="Influence against Gaussian overlap, means group" loading="lazy">
+            <img        data-m="ovl"  data-g="ms"      src="img/overlap_ms.jpg"     alt="Influence against Gaussian overlap, means and scales" loading="lazy">
+            <img        data-m="ovl"  data-g="colors"  src="img/overlap_colors.jpg" alt="Influence against Gaussian overlap, colors group" loading="lazy">
+          </div>
+          <div class="sub" id="altresultsub"></div>
+        </figure>
+      </div>
+
+      <div class="grouptoggle" id="altgroup" role="group" aria-label="Parameter group">
+        <span class="tinylabel">parameter group</span>
+        <button class="gbtn active" type="button" data-g="means">means</button>
+        <button class="gbtn" type="button" data-g="ms">m+s</button>
+        <button class="gbtn" type="button" data-g="colors">colors</button>
+      </div>
+
+      <p class="layerverdict" id="altverdict"></p>
+    </div>
+
+    <p>But can either substitute influence? They are conceptually simpler and computationally
+      cheaper, so it is worth assessing whether the training images each of them identifies as most
+      beneficial and most harmful coincide with those influence identifies. If they point to the
+      same images, there is no practical value in computing influence.</p>
+
+    <h3>Do the measures select the same training images?</h3>
+    <p>The comparison is made on Garden test view 14, the only evaluated view whose selected set
+      contains training images with large negative influence estimates.</p>
+    <div class="figsplit">
+      <aside class="fignote">
+        <div class="row">
+          <span class="k">Beneficial side</span><span class="v tight">Mostly agreement</span>
+          <p>On three of the five, 111, 112 and 139. A training image whose camera is close to the
+            test view usually shares content with it, and shared content usually helps the
+            reconstruction, so proximity alone orders the beneficial images about as well as
+            influence does.</p>
+        </div>
+        <div class="row">
+          <span class="k">Harmful side</span><span class="v tight">No agreement</span>
+          <p>This is what separates the measures. Influence carries a sign, and on this view the
+            sign is correct: train 85, which only influence marks as harmful, is confirmed harmful
+            by the LOO retraining.</p>
+        </div>
+      </aside>
+      <div class="tablewrap">
+        <table>
+          <caption>The five most beneficial and five most harmful training images for Garden test view 14
+            under each measure. Bold marks an index that influence and at least one geometric measure both
+            select. Distances are negated so closer cameras rank as more beneficial.</caption>
+          <thead><tr><th>Measure</th><th>Most beneficial</th><th>Most harmful</th></tr></thead>
+          <tbody>
+            <tr class="hl"><td>Influence (means)</td><td class="num">57, <strong>111</strong>, <strong>112</strong>, <strong>139</strong>, 140</td><td class="num">56, 85, 86, 87, 91</td></tr>
+            <tr><td>Gaussian overlap</td><td class="num"><strong>111</strong>, <strong>112</strong>, <strong>139</strong>, 162, 163</td><td class="num">7, 9, 10, 14, 37</td></tr>
+            <tr><td>−translation distance</td><td class="num"><strong>111</strong>, <strong>112</strong>, <strong>139</strong>, 138, 163</td><td class="num">9, 10, 11, 12, 13</td></tr>
+            <tr><td>−rotation distance</td><td class="num"><strong>111</strong>, <strong>112</strong>, <strong>139</strong>, 85, 163</td><td class="num">43, 73, 100, 126, 152</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3>Same overlap, opposite effect</h3>
+    <p>Train 111 and train 85 have nearly identical Gaussian overlap with test view 14, 0.689
+      against 0.670, so geometry ranks them together, yet one is the most beneficial image for that
+      view and the other the most harmful. Only influence carries a sign, and it can be attributed
+      Gaussian by Gaussian.</p>
+
+    <div class="layers wide" id="layers">
+      <div class="layerrail" id="layerrail" role="tablist" aria-label="Layer">
+        <div class="railcap">Peel back the view</div>
+        <button class="lbtn active" type="button" role="tab" data-layer="0" aria-selected="true">
+          <span class="n">01</span><span class="t">Where they sit</span>
+          <span class="d">The two training cameras against test view 14 in the capture, every camera colored by its influence.</span>
+        </button>
+        <button class="lbtn" type="button" role="tab" data-layer="1" aria-selected="false">
+          <span class="n">02</span><span class="t">Gaussian overlap</span>
+          <span class="d">In blue, the Gaussians this image and test view 14 both render. Grey are the ones only the test view sees.</span>
+        </button>
+        <button class="lbtn" type="button" role="tab" data-layer="2" aria-selected="false">
+          <span class="n">03</span><span class="t">Per-Gaussian influence</span>
+          <span class="d">The same Gaussians, colored by how much this image helps (red) or harms (blue) the view through each one.</span>
+        </button>
+      </div>
+
+      <div class="layerstage">
+        <figure class="rigframe" id="layer-rig">
+          <img src="img/rig_test14_85_111.png" loading="lazy" alt="Test view 14 and the two training cameras on the Garden capture, every camera colored by its influence on that view">
+          <div class="sub">train 111 and train 85 against test view 14 · circled on the capture</div>
+        </figure>
+        <div class="frame" hidden>
+          <div class="colhead neg">Train 85 · most harmful</div>
+          <div class="plate">
+            <img src="img/overlap_train85_test14_v2.jpg" alt="Gaussian centers train 85 shares with test view 14" loading="lazy">
+            <img src="img/pergauss_train85_test14_v2.jpg" alt="Per-Gaussian influence of train 85 on test view 14" loading="lazy">
+          </div>
+          <div class="sub" data-sub="85">overlap with test 14 · 0.670</div>
+        </div>
+        <div class="frame" hidden>
+          <div class="colhead pos">Train 111 · most beneficial</div>
+          <div class="plate">
+            <img src="img/overlap_train111_test14_v2.jpg" alt="Gaussian centers train 111 shares with test view 14" loading="lazy">
+            <img src="img/pergauss_train111_test14_v2.jpg" alt="Per-Gaussian influence of train 111 on test view 14" loading="lazy">
+          </div>
+          <div class="sub" data-sub="111">overlap with test 14 · 0.689</div>
+        </div>
+        <p class="layerverdict" id="layerverdict"><b>They are neighbours.</b> Train 111 and train 85 sit
+          on adjacent arcs, both among the cameras closest to test view 14, and they are the most
+          beneficial and the most harmful image for that view.</p>
+      </div>
+    </div>
+
+    <h3>Does the prediction hold under PSNR?</h3>
+    <p>PSNR is the standard 3DGS evaluation metric, while everything above is measured under the
+      training loss, the same loss the estimator is built from. The test view 14 analysis was
+      extended to the five most beneficial and five most harmful training images, retraining with
+      each one removed and reading PSNR instead.</p>
+
+    <div class="figsplit flip">
+      <figure class="big">
+        <img src="img/loo_psnr_test14_v2.jpg" alt="PSNR on Garden test view 14 after each of the ten LOO retrainings">
+        <figcaption><b>Fig. 5.11</b> PSNR on Garden test view 14 after each of the ten LOO retrainings.
+          Red stars mark the images predicted most beneficial, blue stars those predicted most
+          harmful.</figcaption>
+      </figure>
+      <aside class="fignote">
+        <div class="row">
+          <span class="k">Beneficial removed</span><span class="v">PSNR ↓</span>
+          <p>Consistently below the baseline, the model trained on all training images.</p>
+        </div>
+        <div class="row">
+          <span class="k">Harmful removed</span><span class="v">PSNR ↑</span>
+          <p>Consistently above it. The predictions hold under PSNR as well as under the training
+            loss for this view.</p>
+        </div>
+      </aside>
+    </div>
+
+    <h3>Computational cost</h3>
+    <p>Computing the eFIM influence for a whole scene is computationally inexpensive. Garden needs
+      one gradient pass over the training images to form the Fisher diagonal and then one gradient
+      per test view, after which each score is a cheap combination of the stored gradients. Storing
+      the gradients instead of recomputing them is what makes each score cheap, and it is also what
+      sets the memory requirement: all training image gradients are held at once, peaking at about
+      35 GB.</p>
+
+    <div class="costrow">
+      <div class="c"><span class="v">~13 min</span>
+        <span class="d">eFIM influence, all six parameter groups × all six Garden test views.</span></div>
+      <div class="c"><span class="v">~56 min</span>
+        <span class="d">One single LOO retrain, a full Splatfacto run of 30,000 iterations, median
+          run time.</span></div>
+      <div class="c slow"><span class="v">~156 h</span>
+        <span class="d">Full attribution by retraining, over Garden’s 167 training images.</span></div>
+    </div>
+
+  </div>
+</section>
+
+<section id="explorer">
+  <div class="wrap">
+    <div class="eyebrow">Interactive · Scene influence</div>
+    <div class="col"><h2>Influence across the scene</h2>
+      <p>Each training camera sits where the photo was taken, coloured by that image's influence on
+        the selected test view: <span style="color:var(--neg);font-weight:600">harmful</span> through
+        neutral to <span style="color:var(--pos);font-weight:600">beneficial</span>. Images close to
+        the test view tend to matter most, but not always, and not always for the better.</p></div>
+
+    <div class="grouptoggle" id="scenetoggle" role="group" aria-label="Scene">
+      <button class="gbtn active" data-src="influence_viz_garden.html">Garden</button>
+      <button class="gbtn" data-src="influence_viz_bicycle.html">Bicycle</button>
+      <button class="gbtn" data-src="influence_viz_room.html">Room</button>
+    </div>
+    <div class="explorer" style="margin-top:.8rem">
+      <iframe id="scene-frame" src="influence_viz_garden.html" title="Interactive scene-influence explorer"
+        style="width:100%;height:min(85vh,840px);border:0;display:block;background:var(--surface-2)"></iframe>
+    </div>
+    <p class="note" style="margin-top:.9rem">Pick a scene above, then a test image and parameter
+      group in the toolbar; hover a training camera to preview its photo and its influence score.</p>
+  </div>
+</section>
+
+<footer id="code">
+  <div class="wrap">
+    <div class="eyebrow">Ch. 6 · Conclusions</div>
+    <div class="col">
+      <h2>Influence functions can identify both beneficial and harmful images under specific conditions</h2>
+      <p>Two hypotheses were formulated: that influence functions can quantify each training
+        image’s individual contribution to the final reconstruction (H1), and that influence
+        estimates approximate the LOO effect of each training image at a fraction of the retraining
+        cost (H2).</p>
+      <div class="finding">
+        <div class="row">
+          <span class="k">On the research question and H1</span>
+          <p>Influence functions can identify beneficial and harmful training images, under two
+            conditions.</p>
+          <div class="conds">
+            <div class="c"><span class="k">Condition 1</span>
+              <span class="t">Only among the training images the estimate itself ranks most
+                influential.</span></div>
+            <div class="c"><span class="k">Condition 2</span>
+              <span class="t">Only when computed on the appropriate parameter group. The best group
+                still changes from view to view, and this thesis found no rule to find it a
+                priori.</span></div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="k">On H2</span>
+          <p>The estimates approximate the LOO effect at a small fraction of the retraining cost,
+            correlating moderately to strongly with it and reaching r<sub>S</sub> = +0.92 on Garden
+            test view 14. H2 holds.</p>
+        </div>
+        <div class="row">
+          <span class="k">Influence versus geometry</span>
+          <p>On the images that help a view, influence is arguably not needed. For harmful image
+            detection it remains an open question, with a slight advantage to influence, since it is
+            gradient based, and the LOO retraining corroborated it on at least one evaluated test
+            view.</p>
+        </div>
+      </div>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/mcms2/influence-functions-3dgs">Code repository</a>
+      </div>
+      <h3 id="citation">Cite</h3>
+      <div class="cite">Sebastião, M. C. (2026). <i>Influence Functions in 3D Gaussian Splatting:
+        Data Attribution via the Empirical Fisher.</i> MSc thesis, KTH Royal Institute of Technology.</div>
+      <div class="bibtex">
+        <button class="copy" id="bibCopy" type="button">copy</button>
+        <pre id="bibText">@mastersthesis{sebastiao2026influence,
+  title   = {Influence Functions in 3D Gaussian Splatting: Data Attribution via the Empirical Fisher},
+  author  = {Sebasti{\~a}o, Maria Carolina},
+  school  = {KTH Royal Institute of Technology},
+  year    = {2026}
+}</pre>
+      </div>
+      <div class="foot-row">
+        <span>Mip-NeRF 360 · Splatfacto / Nerfstudio</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  // ---------- parameter-group ablation table (Table 4.x, Garden, Spearman r_S) ----------
+  var VIEWS = [3, 9, 13, 14, 16, 17];
+  var HL = 16;
+  // Spearman r_S (Table, main text) and Pearson r_P (Table, appendix), Garden, means-selected set
+  var ABL_S = {
+    means:  {3:0.73, 9:0.49, 13:0.29, 14:0.92, 16:0.01, 17:0.78},
+    ms:     {3:0.73, 9:0.54, 13:0.49, 14:0.92, 16:0.20, 17:0.82},
+    msq:    {3:0.73, 9:0.60, 13:0.46, 14:0.92, 16:0.20, 17:0.86},
+    colors: {3:0.71, 9:0.71, 13:0.61, 14:0.72, 16:0.58, 17:0.76},
+    "5p":   {3:0.77, 9:0.60, 13:0.50, 14:0.89, 16:0.20, 17:0.82},
+    all6:   {3:0.71, 9:0.73, 13:0.61, 14:0.75, 16:0.48, 17:0.83}
+  };
+  var ABL_P = {
+    means:  {3:0.59, 9:0.41, 13:0.46, 14:0.78, 16:-0.27, 17:0.94},
+    ms:     {3:0.62, 9:0.48, 13:0.45, 14:0.79, 16:-0.24, 17:0.91},
+    msq:    {3:0.65, 9:0.52, 13:0.48, 14:0.77, 16:-0.20, 17:0.92},
+    colors: {3:0.61, 9:0.70, 13:0.23, 14:0.69, 16:0.28, 17:0.81},
+    "5p":   {3:0.65, 9:0.55, 13:0.40, 14:0.76, 16:-0.13, 17:0.89},
+    all6:   {3:0.62, 9:0.69, 13:0.27, 14:0.71, 16:0.18, 17:0.83}
+  };
+  var SIG = 0.632;
+  function chip(v){
+    if(v>=0.65) return '<span class="chip pos">strong</span>';
+    if(v>=0.35) return '<span class="chip mid">moderate</span>';
+    if(v>=0.15) return '<span class="chip low">weak</span>';
+    return '<span class="chip low">fails</span>';
+  }
+  function fmt(v){ return (v>=0?'+':'−')+Math.abs(v).toFixed(2); }
+  function cell(v){ return fmt(v)+(Math.abs(v)>=SIG?'<span class="star"> *</span>':''); }
+  // ---------- own-set panels, opened from the table or the buttons ----------
+  function panelOpen(id){var el=document.getElementById('panel-'+id);return el&&!el.hidden;}
+  function syncPanels(){
+    var ids=['14','16'];
+    for(var k=0;k<ids.length;k++){
+      var open=panelOpen(ids[k]);
+      var trig=document.querySelectorAll('[data-panel="'+ids[k]+'"]');
+      for(var m=0;m<trig.length;m++){
+        trig[m].setAttribute('aria-expanded',open?'true':'false');
+        if(trig[m].classList.contains('rowopen')||trig[m].classList.contains('gbtn'))
+          trig[m].classList.toggle('active',open);
+      }
+    }
+  }
+  function togglePanel(id){
+    var el=document.getElementById('panel-'+id); if(!el) return;
+    var opening=el.hidden; el.hidden=!opening; syncPanels();
+    if(opening) el.scrollIntoView({block:'nearest',behavior:'smooth'});
+  }
+  document.addEventListener('click',function(e){
+    var c=e.target.closest?e.target.closest('[data-close]'):null;
+    if(c){document.getElementById('panel-'+c.dataset.close).hidden=true;syncPanels();return;}
+    var t=e.target.closest?e.target.closest('[data-panel]'):null;
+    if(t){togglePanel(t.dataset.panel);}
+  });
+
+  var body=document.getElementById('ablation-body');
+  var toggle=document.getElementById('grouptoggle');
+  function render(g){
+    var ds=ABL_S[g], dp=ABL_P[g], rows='';
+    for(var i=0;i<VIEWS.length;i++){
+      var v=VIEWS[i], s=ds[v], p=dp[v];
+      var hasPanel=(v===14||v===16);
+      var cls=[]; if(v===HL) cls.push('hl'); if(hasPanel) cls.push('rowlink');
+      rows+='<tr'+(cls.length?' class="'+cls.join(' ')+'"':'')+
+            (hasPanel?' data-panel="'+v+'" title="Open the per group panel for test '+v+'"':'')+
+            '><td class="num">'+v+'</td>'+
+            '<td class="num">'+cell(p)+'</td>'+
+            '<td class="num">'+cell(s)+'</td><td>'+chip(s)+
+            (hasPanel?'<button class="rowopen" type="button" data-panel="'+v+'" aria-expanded="false" aria-controls="panel-'+v+'">panel</button>':'')+
+            '</td></tr>';
+    }
+    body.innerHTML=rows;
+    syncPanels();
+    var btns=toggle.querySelectorAll('.gbtn');
+    for(var j=0;j<btns.length;j++) btns[j].classList.toggle('active',btns[j].dataset.g===g);
+  }
+  toggle.addEventListener('click',function(e){
+    var b=e.target.closest('.gbtn'); if(b) render(b.dataset.g);
+  });
+  render('means');
+
+  // ---------- the two geometric alternatives: concept beside result ----------
+  var altM=document.getElementById('altmeasure'), altG=document.getElementById('altgroup');
+  if(altM&&altG){
+    var ALT={
+      dist:{
+        concept:'straight line distance from each training camera to the test camera',
+        verdict:'<b>Closer camera, higher influence.</b> The training images with the largest absolute influence are those whose cameras are closest to the test view.',
+        r:{means:'Fig. 5.6 · means · r<sub>P</sub> = −0.50, r<sub>S</sub> = −0.67',
+           ms:'Fig. 5.6 · means + scales · r<sub>P</sub> = −0.50, r<sub>S</sub> = −0.69',
+           colors:'Fig. 5.6 · colors · r<sub>P</sub> = −0.57, r<sub>S</sub> = −0.67'}
+      },
+      ovl:{
+        concept:'the Gaussians the training view and the test view both render',
+        verdict:'<b>More overlap, higher influence.</b> Training images that share more Gaussians with a test view tend to receive larger absolute influence.',
+        r:{means:'Fig. 5.7 · means · r<sub>P</sub> = +0.60, r<sub>S</sub> = +0.56',
+           ms:'Fig. 5.7 · means + scales · r<sub>P</sub> = +0.62, r<sub>S</sub> = +0.60',
+           colors:'Fig. 5.7 · colors · r<sub>P</sub> = +0.70, r<sub>S</sub> = +0.63'}
+      }
+    };
+    var altState={m:'dist',g:'means'};
+    var altImgs=document.querySelectorAll('#alts .stack img');
+    var altConceptSub=document.getElementById('altconceptsub');
+    var altResultSub=document.getElementById('altresultsub');
+    var altVerdict=document.getElementById('altverdict');
+    function altRender(){
+      var d=ALT[altState.m];
+      for(var i=0;i<altImgs.length;i++){
+        var im=altImgs[i], g=im.dataset.g;
+        im.classList.toggle('on', im.dataset.m===altState.m && (!g || g===altState.g));
+      }
+      altConceptSub.textContent=d.concept;
+      altResultSub.innerHTML=d.r[altState.g];
+      altVerdict.innerHTML=d.verdict;
+      var mb=altM.querySelectorAll('.gbtn');
+      for(var a=0;a<mb.length;a++){
+        var on=mb[a].dataset.measure===altState.m;
+        mb[a].classList.toggle('active',on); mb[a].setAttribute('aria-selected',on?'true':'false');
+      }
+      var gb=altG.querySelectorAll('.gbtn');
+      for(var b=0;b<gb.length;b++) gb[b].classList.toggle('active',gb[b].dataset.g===altState.g);
+    }
+    altM.addEventListener('click',function(e){
+      var b=e.target.closest('.gbtn'); if(b){altState.m=b.dataset.measure;altRender();}
+    });
+    altG.addEventListener('click',function(e){
+      var b=e.target.closest('.gbtn'); if(b&&b.dataset.g){altState.g=b.dataset.g;altRender();}
+    });
+    altRender();
+  }
+
+  // ---------- layered comparison of train 85 against train 111 ----------
+  var rail=document.getElementById('layerrail');
+  if(rail){
+    var LAYERS=[
+      {rig:true,
+       verdict:'<b>They are neighbours.</b> Train 111 and train 85 sit on adjacent arcs, both among the cameras closest to test view 14, and they are the most beneficial and the most harmful image for that view.'},
+      {sub85:'overlap with test 14 · 0.670', sub111:'overlap with test 14 · 0.689',
+       verdict:'<b>Geometry cannot separate them.</b> 0.670 against 0.689, a difference of under three percent. Any measure built on shared content ranks these two together.'},
+      {sub85:'influence −1969', sub111:'influence +5820',
+       verdict:'<b>Opposite signs.</b> Train 85 turns blue across the shared region and train 111 red. Removing one hurts the reconstruction, removing the other improves it, and only influence saw the difference.'}
+    ];
+    var plates=document.querySelectorAll('.layerstage .plate');
+    var subs=document.querySelectorAll('.layerstage .frame .sub');
+    var verdict=document.getElementById('layerverdict');
+    var lbtns=rail.querySelectorAll('.lbtn');
+    var rig=document.getElementById('layer-rig');
+    var frames=document.querySelectorAll('.layerstage .frame');
+    function setLayer(i){
+      i=Math.max(0,Math.min(LAYERS.length-1,i));
+      var isRig=!!LAYERS[i].rig;
+      rig.hidden=!isRig;
+      for(var f=0;f<frames.length;f++) frames[f].hidden=isRig;
+      if(!isRig){
+        for(var p=0;p<plates.length;p++){
+          var imgs=plates[p].querySelectorAll('img');
+          for(var q=0;q<imgs.length;q++) imgs[q].classList.toggle('on',q===i-1);
+        }
+        subs[0].textContent=LAYERS[i].sub85;
+        subs[1].textContent=LAYERS[i].sub111;
+      }
+      verdict.innerHTML=LAYERS[i].verdict;
+      for(var b=0;b<lbtns.length;b++){
+        var on=(+lbtns[b].dataset.layer===i);
+        lbtns[b].classList.toggle('active',on);
+        lbtns[b].setAttribute('aria-selected',on?'true':'false');
+      }
+    }
+    rail.addEventListener('click',function(e){
+      var b=e.target.closest('.lbtn'); if(b) setLayer(+b.dataset.layer);
+    });
+    rail.addEventListener('keydown',function(e){
+      var cur=-1;
+      for(var b=0;b<lbtns.length;b++) if(lbtns[b].classList.contains('active')) cur=b;
+      var next=null;
+      if(e.key==='ArrowDown'||e.key==='ArrowRight') next=(cur+1)%lbtns.length;
+      if(e.key==='ArrowUp'||e.key==='ArrowLeft') next=(cur-1+lbtns.length)%lbtns.length;
+      if(next!==null){e.preventDefault();setLayer(next);lbtns[next].focus();}
+    });
+  }
+
+  // scene gallery carousel
+  var car=document.getElementById('sceneCarousel');
+  if(car){
+    var track=car.querySelector('.track'), slides=car.querySelectorAll('.slide'), dotsWrap=car.querySelector('.dots');
+    car.querySelector('.prev').addEventListener('click',function(){track.scrollBy({left:-track.clientWidth,behavior:'smooth'});});
+    car.querySelector('.next').addEventListener('click',function(){track.scrollBy({left:track.clientWidth,behavior:'smooth'});});
+    slides.forEach(function(s,i){
+      var d=document.createElement('span'); if(i===0) d.className='on';
+      d.addEventListener('click',function(){track.scrollTo({left:i*track.clientWidth,behavior:'smooth'});});
+      dotsWrap.appendChild(d);
+    });
+    track.addEventListener('scroll',function(){
+      var idx=Math.round(track.scrollLeft/track.clientWidth), ds=dotsWrap.children;
+      for(var i=0;i<ds.length;i++) ds[i].className=(i===idx?'on':'');
+    },{passive:true});
+  }
+
+  // scene switcher for the explorer iframe
+  var sceneToggle=document.getElementById('scenetoggle');
+  var sceneFrame=document.getElementById('scene-frame');
+  if(sceneToggle&&sceneFrame){
+    sceneToggle.addEventListener('click',function(e){
+      var b=e.target.closest('.gbtn'); if(!b) return;
+      if(sceneFrame.getAttribute('src')!==b.dataset.src) sceneFrame.setAttribute('src',b.dataset.src);
+      var btns=sceneToggle.querySelectorAll('.gbtn');
+      for(var k=0;k<btns.length;k++) btns[k].classList.toggle('active',btns[k]===b);
+    });
+  }
+
+  // copy bibtex
+  var bibCopy=document.getElementById('bibCopy'),bibText=document.getElementById('bibText');
+  if(bibCopy&&bibText){
+    bibCopy.addEventListener('click',function(){
+      var t=bibText.textContent;
+      var done=function(){bibCopy.textContent='copied';setTimeout(function(){bibCopy.textContent='copy';},1400);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,done);}
+      else{var r=document.createRange();r.selectNodeContents(bibText);var s=getSelection();s.removeAllRanges();s.addRange(r);try{document.execCommand('copy');}catch(e){}s.removeAllRanges();done();}
+    });
+  }
+
+  // theme toggle
+  var btn=document.getElementById('themeBtn');
+  btn.addEventListener('click',function(){
+    var cur=document.documentElement.getAttribute('data-theme');
+    var dark=cur?cur==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+    document.documentElement.setAttribute('data-theme',dark?'light':'dark');
+  });
+
+  // section rail scrollspy
+  var navLinks=[].slice.call(document.querySelectorAll('.sidenav a'));
+  var byId={}; navLinks.forEach(function(a){byId[a.dataset.sec]=a;});
+  var spy=new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if(en.isIntersecting){
+        navLinks.forEach(function(a){a.classList.remove('active');});
+        if(byId[en.target.id]) byId[en.target.id].classList.add('active');
+      }
+    });
+  },{rootMargin:'-45% 0px -50% 0px',threshold:0});
+  navLinks.forEach(function(a){var s=document.getElementById(a.dataset.sec); if(s) spy.observe(s);});
+
+  // hide the rail while the hero is on screen, reveal once reading starts
+  var railNav=document.querySelector('.sidenav');
+  var heroEl=document.getElementById('top');
+  function railVis(){
+    if(!railNav||!heroEl) return;
+    railNav.classList.toggle('nav-hidden', window.pageYOffset < heroEl.offsetHeight*0.6);
+  }
+  window.addEventListener('scroll',railVis,{passive:true});
+  window.addEventListener('resize',railVis);
+  railVis();
+
+  // scroll progress
+  var prog=document.getElementById('progress');
+  function tickProgress(){var d=document.documentElement;
+    var m=d.scrollHeight-d.clientHeight;
+    prog.style.width=(m>0?(d.scrollTop/m)*100:0)+'%';}
+  addEventListener('scroll',tickProgress,{passive:true});addEventListener('resize',tickProgress);tickProgress();
+
+  var reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+  // diverging color: t in [-1,1] -> hex string via neg/neutral/pos
+  function hexToRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(function(c){return c+c;}).join('');
+    return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+  function mix(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+  function diverge(t,neg,neu,pos){t=Math.max(-1,Math.min(1,t));
+    var c=t<0?mix(neu,neg,-t):mix(neu,pos,t);return 'rgb('+c.map(function(x){return Math.round(x);}).join(',')+')';}
+
+  // ---------- hero splat field ----------
+  var hc=document.getElementById('splat'),hx=hc.getContext('2d'),blobs=[],hero=hc.parentElement;
+  function seedHero(){
+    var w=hc.width=hero.clientWidth*devicePixelRatio,h=hc.height=hero.clientHeight*devicePixelRatio;
+    blobs=[];var n=Math.round(w*h/45000);
+    for(var i=0;i<n;i++){
+      var cx=Math.random(),cy=Math.random();
+      // beneficial cluster toward upper-right, harmful lower-left -> a gradient field
+      var t=(cx-cy)*1.15+ (Math.random()-0.5)*0.5; t=Math.max(-1,Math.min(1,t));
+      blobs.push({x:cx*w,y:cy*h,r:(30+Math.random()*120)*devicePixelRatio,t:t,
+        dx:(Math.random()-0.5)*0.12*devicePixelRatio,dy:(Math.random()-0.5)*0.12*devicePixelRatio});
+    }
+  }
+  function drawHero(){
+    var neg=hexToRgb(css('--neg')),pos=hexToRgb(css('--pos')),neu=hexToRgb(css('--hero'));
+    hx.clearRect(0,0,hc.width,hc.height);hx.globalCompositeOperation='source-over';
+    for(var i=0;i<blobs.length;i++){var b=blobs[i];
+      var col=diverge(b.t,neg,neu,pos);
+      var g=hx.createRadialGradient(b.x,b.y,0,b.x,b.y,b.r);
+      g.addColorStop(0,col.replace('rgb','rgba').replace(')',',0.30)'));
+      g.addColorStop(1,col.replace('rgb','rgba').replace(')',',0)'));
+      hx.fillStyle=g;hx.beginPath();hx.arc(b.x,b.y,b.r,0,7);hx.fill();
+      if(!reduce){b.x+=b.dx;b.y+=b.dy;
+        if(b.x<-b.r)b.x=hc.width+b.r; if(b.x>hc.width+b.r)b.x=-b.r;
+        if(b.y<-b.r)b.y=hc.height+b.r; if(b.y>hc.height+b.r)b.y=-b.r;}
+    }
+    if(!reduce)requestAnimationFrame(drawHero);
+  }
+  function boot(){seedHero();drawHero();}
+  boot();
+  var t;window.addEventListener('resize',function(){clearTimeout(t);t=setTimeout(boot,150);});
+})();
+
+// ---------- click any figure to see it full size ----------
+(function(){
+  var lb=document.getElementById('lightbox'), big=lb.querySelector('img');
+  var sel='figure.big img, .rigframe img, .frame .plate img, .altgrid .stack img';
+  Array.prototype.forEach.call(document.querySelectorAll(sel), function(el){
+    el.classList.add('zoomable');
+    el.addEventListener('click', function(){
+      big.src = el.currentSrc || el.src; big.alt = el.alt || '';
+      lb.classList.add('on'); document.body.style.overflow='hidden';
+    });
+  });
+  function shut(){ lb.classList.remove('on'); big.removeAttribute('src'); document.body.style.overflow=''; }
+  lb.addEventListener('click', shut);
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') shut(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+
+# Checkpoints, tensors and run artifacts: never tracked
+*.pt
+*.ckpt
+*.zip
+outputs/
+results*/
+loo_*/
+*.log
+
+# Figures produced by the analysis scripts
+*.jpg
+*.JPG
+*.png
+*.pdf
+
+# except the ones the project page renders
+!website/img/**
+website/img/*.zip
+
+# Superseded single scene explorer, kept locally; the per scene files under
+# website/influence_viz_{garden,bicycle,room}.html are the ones the page loads
+website/influence_viz.html
+
+# Seed to seed retraining control, not used in the thesis
+pipeline/noise_floor.py
+
+# Stray markdown copy of an old plotting script
+plot.md
+
+# RobustNeRF distractor experiment: not part of the thesis, not on the project page
+robustnerf/
+website/img/0clean*
+website/img/2clutter*
+website/img/influence_ecdf_*
+
+.DS_Store
